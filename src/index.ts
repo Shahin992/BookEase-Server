@@ -14,11 +14,15 @@ const PORT = process.env.PORT || 8000;
 const app = express();
 app.use(express.json());
 app.use(cookieParser());
+
 app.use(
-    cors({
-        origin: ["http://localhost:5173", "https://book-ease-delta.vercel.app/"],
-        credentials: true
-    })
+  cors({
+    origin: [
+      "https://book-ease-delta.vercel.app", 
+      "http://localhost:5173",              
+    ],
+    credentials: true, 
+  })
 );
 
 // Database connection
