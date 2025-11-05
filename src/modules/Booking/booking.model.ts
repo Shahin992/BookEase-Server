@@ -17,7 +17,7 @@ const bookingSchema = new Schema<IBooking>(
     paymentStatus: {
       type: String,
       enum: ["Pending", "Paid", "Cancelled"],
-      default: "Pending",
+      default: "Paid",
     },
     bookingStatus: {
       type: String,

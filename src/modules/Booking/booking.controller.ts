@@ -5,6 +5,7 @@ import { Booking } from './booking.model';
 import { formatZodError } from '../Services/services.controller';
 import { bookingSchema,} from '../../../Utils/ErrorValidation';
 import mongoose from 'mongoose';
+import { User } from '../User/user.model';
 
 
 interface CreateBookingRequest {
@@ -15,9 +16,58 @@ interface CreateBookingRequest {
   _id: string
 }
 
+export const checkBookingConflict = async (req: Request, res: Response) => {
+  try {
+    const { serviceId, checkInDate, checkOutDate } = req.body;
+
+    if (!serviceId || !checkInDate || !checkOutDate) {
+      return res.status(400).json({
+        success: false,
+        statusCode: 400,
+        message: "Missing required fields: serviceId, checkInDate, checkOutDate",
+        data: [],
+      });
+    }
+
+    const checkIn = new Date(checkInDate);
+    const checkOut = new Date(checkOutDate);
+
+    const conflictingBooking = await Booking.findOne({
+      service: serviceId,
+      bookingStatus: { $in: ["Upcoming", "Paid"] },
+      $or: [
+        { checkInDate: { $lte: checkOut }, checkOutDate: { $gte: checkIn } },
+      ],
+    });
+
+    if (conflictingBooking) {
+      return res.status(409).json({
+        success: false,
+        statusCode: 409,
+        message: "This service is already booked for the selected dates",
+        data: [],
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      statusCode: 200,
+      message: "No booking conflicts for selected dates",
+      data: [],
+    });
+  } catch (error: any) {
+    console.error("Error checking booking conflict:", error);
+    res.status(500).json({
+      success: false,
+      statusCode: 500,
+      message: error.message,
+      data: [],
+    });
+  }
+};
+
 export const createBooking = async (req: Request, res: Response) => {
   try {
-    console.log('req in controller===>', req.body)
     const parsed = req.body as CreateBookingRequest;
 
     const service = await Services.findById(parsed.serviceId);
@@ -32,23 +82,6 @@ export const createBooking = async (req: Request, res: Response) => {
 
      const checkIn = new Date(parsed.checkInDate);
     const checkOut = new Date(parsed.checkOutDate);
-
-     const conflictingBooking = await Booking.findOne({
-      service: parsed.serviceId,
-      bookingStatus: { $in: ["Upcoming", "Paid"] }, // Only active bookings
-      $or: [
-        { checkInDate: { $lte: checkOut }, checkOutDate: { $gte: checkIn } },
-      ],
-    });
-
-    if (conflictingBooking) {
-      return res.status(409).json({
-        success: false,
-        statusCode: 409,
-        message: "This service is already booked for the selected dates",
-        data: [],
-      });
-    }
 
     
     const totalDays = Math.ceil((checkOut.getTime() - checkIn.getTime()) / (1000*60*60*24));
@@ -73,7 +106,7 @@ export const createBooking = async (req: Request, res: Response) => {
       totalDays,
       totalGuests: parsed.totalGuests,
       totalPrice,
-      paymentStatus: "Pending",
+      paymentStatus: "Paid",
       bookingStatus: "Upcoming",
     });
 
@@ -94,6 +127,205 @@ export const createBooking = async (req: Request, res: Response) => {
     });
   }
 };
+
+export const getUserBookings = async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).body.userId; // receive payload from frontend
+   
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        statusCode: 401,
+        message: "Unauthorized: User not authenticated",
+        data: [],
+      });
+    }
+
+    // Fetch bookings for the user
+    const bookings = await Booking.find({ user: userId })
+      .populate({
+        path: "service",
+        model: Services, // ensure Service model is passed
+        select: "title type location price image available badge",
+      })
+      .populate({
+        path: "user",
+        model: User,
+        select: "name email",
+      })
+      .sort({ createdAt: -1 });
+
+    if (!bookings || bookings.length === 0) {
+      return res.status(404).json({
+        success: false,
+        statusCode: 200,
+        message: "No bookings found for this user",
+        data: [],
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      statusCode: 200,
+      message: "User bookings retrieved successfully",
+      data: bookings,
+    });
+  } catch (error: any) {
+    console.error("Error fetching user bookings:", error);
+    res.status(500).json({
+      success: false,
+      statusCode: 500,
+      message: "Internal Server Error",
+      data: [],
+    });
+  }
+};
+
+export const updateBookingDates = async (req: Request, res: Response) => {
+  try {
+    const { bookingId, checkInDate, checkOutDate } = req.body;
+
+    // 🔸 Validate required fields
+    if (!bookingId || !checkInDate || !checkOutDate) {
+      return res.status(400).json({
+        success: false,
+        statusCode: 400,
+        message: "Missing required fields: bookingId, checkInDate, checkOutDate",
+        data: [],
+      });
+    }
+
+    // 🔸 Find the existing booking
+    const booking = await Booking.findById(bookingId);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        statusCode: 404,
+        message: "Booking not found",
+        data: [],
+      });
+    }
+
+    // 🔸 Convert to Date objects
+    const newCheckIn = new Date(checkInDate);
+    const newCheckOut = new Date(checkOutDate);
+
+    // 🔸 Check for conflicting bookings (excluding the current booking)
+    const conflictingBooking = await Booking.findOne({
+      service: booking.service,
+      _id: { $ne: bookingId }, // exclude current booking
+      bookingStatus: { $in: ["Upcoming", "Paid"] },
+      $or: [
+        { checkInDate: { $lte: newCheckOut }, checkOutDate: { $gte: newCheckIn } },
+      ],
+    });
+
+    if (conflictingBooking) {
+      return res.status(409).json({
+        success: false,
+        statusCode: 409,
+        message: "This service is already booked for the selected dates",
+        data: [],
+      });
+    }
+
+    // 🔸 Calculate new totalDays and totalPrice
+    const service = await Services.findById(booking.service);
+    if (!service) {
+      return res.status(404).json({
+        success: false,
+        statusCode: 404,
+        message: "Service not found",
+        data: [],
+      });
+    }
+
+    const totalDays = Math.ceil((newCheckOut.getTime() - newCheckIn.getTime()) / (1000 * 60 * 60 * 24));
+    const totalPrice = service.price * totalDays;
+
+    // 🔸 Update booking
+    booking.checkInDate = newCheckIn;
+    booking.checkOutDate = newCheckOut;
+    booking.totalDays = totalDays;
+    booking.totalPrice = totalPrice;
+
+    await booking.save();
+
+    res.status(200).json({
+      success: true,
+      statusCode: 200,
+      message: "Booking dates updated successfully",
+      data: booking,
+    });
+
+  } catch (error: any) {
+    console.error("Error updating booking dates:", error);
+    res.status(500).json({
+      success: false,
+      statusCode: 500,
+      message: error.message,
+      data: [],
+    });
+  }
+};
+
+export const cancelBooking = async (req: Request, res: Response) => {
+  try {
+    const { bookingId } = req.body;
+
+    // 🔸 Validate input
+    if (!bookingId) {
+      return res.status(400).json({
+        success: false,
+        statusCode: 400,
+        message: "Missing required field: bookingId",
+        data: [],
+      });
+    }
+
+    // 🔸 Find the booking
+    const booking = await Booking.findById(bookingId);
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        statusCode: 404,
+        message: "Booking not found",
+        data: [],
+      });
+    }
+
+    // 🔸 If already cancelled
+    if (booking.bookingStatus === "Cancelled") {
+      return res.status(400).json({
+        success: false,
+        statusCode: 400,
+        message: "Booking is already cancelled",
+        data: [],
+      });
+    }
+
+    // 🔸 Update booking status
+    booking.bookingStatus = "Cancelled";
+    await booking.save();
+
+    res.status(200).json({
+      success: true,
+      statusCode: 200,
+      message: "Booking cancelled successfully",
+      data: booking,
+    });
+
+  } catch (error: any) {
+    console.error("Error cancelling booking:", error);
+    res.status(500).json({
+      success: false,
+      statusCode: 500,
+      message: error.message || "Internal Server Error",
+      data: [],
+    });
+  }
+};
+
 
 // export const createBooking = async (req: Request, res: Response) => {
 //   try {
